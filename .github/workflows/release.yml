@@ -1,0 +1,119 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  BINARY: rampart
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            upx: true
+          - goos: linux
+            goarch: arm64
+            upx: true
+          # UPX cannot pack macho/arm64, and packed macho/amd64 binaries are
+          # rejected by code signing on macOS 11+. Ship these uncompressed.
+          - goos: darwin
+            goarch: amd64
+            upx: false
+          - goos: darwin
+            goarch: arm64
+            upx: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve tag and version
+        id: version
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X github.com/mr0xb/rampart/cmd.version=${{ steps.version.outputs.version }}" \
+            -o "dist/${BINARY}" .
+
+      - name: Compress with UPX
+        if: matrix.upx
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: dist/${{ env.BINARY }}
+          args: --best --lzma
+
+      - name: Package
+        id: package
+        run: |
+          name="${BINARY}_${{ steps.version.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mv "dist/${BINARY}" "${name}"
+          gzip -9 -n "${name}"
+          sha256sum "${name}.gz" > "${name}.gz.sha256"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            ${{ steps.package.outputs.name }}.gz
+            ${{ steps.package.outputs.name }}.gz.sha256
+          retention-days: 5
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Collect checksums
+        run: |
+          cd dist
+          cat *.sha256 > checksums.txt
+          rm -f *.sha256
+          ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.gz
+            dist/checksums.txt
