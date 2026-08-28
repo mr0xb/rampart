@@ -13,7 +13,9 @@ designed to be pleasant interactively *and* trivially parseable from scripts.
 - Auth via local **API key** (recommended) or username/password.
 - `--json` on every command for scripting (raw controller objects, jq-friendly).
 - Plain tab-aligned tables by default (awk/cut friendly).
-- `-i` for an interactive Bubble Tea TUI — space toggles rules on/off in place.
+- `-i` for an interactive Bubble Tea TUI — space toggles rules on/off in place,
+  and `e` edits the selected rule, policy or port forward without leaving the
+  table (`-e` opens straight into the edit form).
 - Shell autocompletion, including **live completion of rule/policy IDs** pulled
   from your gateway.
 
@@ -78,7 +80,8 @@ For a legacy software controller use `--legacy --host https://controller:8443`.
 ```sh
 rampart fw list                          # all rules
 rampart fw list --ruleset WAN_IN         # one ruleset
-rampart fw list -i                       # TUI: ↑/↓ navigate, space = enable/disable, q = quit
+rampart fw list -i                       # TUI: ↑/↓ navigate, space = enable/disable, e = edit, q = quit
+rampart fw list -e                       # TUI opened straight into the edit form
 
 rampart fw add --name "Block telnet" --ruleset LAN_IN --action drop \
     --protocol tcp --dst-port 23         # index auto-assigned (next free >= 2000)
@@ -97,13 +100,34 @@ empty — use `policy` instead:
 
 ```sh
 rampart policy list                      # user policies (add --all for predefined)
-rampart policy list -i                   # TUI with space-to-toggle
+rampart policy list -i                   # TUI: space = enable/disable, e = edit
+rampart policy list -e                   # TUI opened straight into the edit form
 rampart policy enable|disable|delete <policy-id>...
 rampart policy get <policy-id>           # full JSON
 
 # The policy schema is rich; author new ones by editing an existing one:
 rampart policy get <id> | jq 'del(._id) | .name = "My copy"' | rampart policy add -f -
 ```
+
+### Port forwards
+
+```sh
+rampart pf list                          # all port-forwarding rules
+rampart pf list -i                       # TUI: space = enable/disable, e = edit, q = quit
+rampart pf list -e                       # TUI opened straight into the edit form
+
+rampart pf add --name "Web" --dst-port 443 --fwd 10.0.10.20 --fwd-port 8443 --protocol tcp
+rampart pf set <rule-id> --fwd-port 9090 # only passed flags change
+rampart pf enable|disable|delete <rule-id>...
+rampart pf get <rule-id>                 # full JSON
+```
+
+In the edit form: `tab`/`↑↓` move between fields, `←/→` cycle the interface and
+protocol choices, `enter` saves, `esc` cancels. Fields rampart does not display
+are round-tripped untouched, so editing one rule never drops controller state
+it does not know about. The same form is available on `fw list` and
+`policy list`; predefined policies are read-only, as the controller rejects
+changes to them.
 
 ### Devices, clients, groups
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -30,6 +31,7 @@ address (--fwd) and port (--fwd-port).`,
 
 var pfListFlags struct {
 	interactive bool
+	edit        bool
 }
 
 var pfListCmd = &cobra.Command{
@@ -66,7 +68,7 @@ var pfListCmd = &cobra.Command{
 				}
 			}
 
-			if pfListFlags.interactive {
+			if pfListFlags.interactive || pfListFlags.edit {
 				return output.RunInteractiveTable(output.TableOpts{
 					Title:      "rampart · port forwards",
 					Columns:    headers,
@@ -77,6 +79,13 @@ var pfListCmd = &cobra.Command{
 						ctx, cancel := backgroundCtx()
 						defer cancel()
 						return c.SetPortForwardEnabled(ctx, id, enable)
+					},
+					EditFields:  pfEditFields(),
+					StartInEdit: pfListFlags.edit,
+					OnEdit: func(id string, values map[string]string) error {
+						ctx, cancel := backgroundCtx()
+						defer cancel()
+						return updatePortForwardFields(ctx, c, id, values)
 					},
 				})
 			}
@@ -89,6 +98,75 @@ var pfListCmd = &cobra.Command{
 			return nil
 		})
 	},
+}
+
+// pfEditFields describes the port-forward fields editable from the TUI. Column
+// indices refer to the `pf list` table headers.
+func pfEditFields() []output.EditField {
+	return []output.EditField{
+		{Label: "name", Key: "name", Column: 8, Kind: output.FieldText,
+			Validate: required("a name")},
+		{Label: "iface", Key: "pfwd_interface", Column: 2, Kind: output.FieldChoice, Options: pfInterfaces},
+		{Label: "proto", Key: "proto", Column: 3, Kind: output.FieldChoice, Options: pfProtocols},
+		{Label: "src", Key: "src", Column: 4, Kind: output.FieldText},
+		{Label: "wan port", Key: "dst_port", Column: 5, Kind: output.FieldText,
+			Validate: validPortSpec},
+		{Label: "fwd to", Key: "fwd", Column: 6, Kind: output.FieldText,
+			Validate: required("an address to forward to")},
+		{Label: "fwd port", Key: "fwd_port", Column: 7, Kind: output.FieldText,
+			Validate: validPortSpec},
+	}
+}
+
+// updatePortForwardFields round-trips the rule so fields rampart does not know
+// about survive the edit, then writes back only the keys the form supplied.
+func updatePortForwardFields(ctx context.Context, c *unifi.Client, id string, values map[string]string) error {
+	rule, err := c.GetPortForward(ctx, id)
+	if err != nil {
+		return err
+	}
+	for k, v := range values {
+		switch k {
+		case "src":
+			if v == "" {
+				v = "any"
+			}
+		case "fwd_port":
+			if v == "" {
+				v = values["dst_port"]
+			}
+		case "pfwd_interface", "proto":
+			v = strings.ToLower(v)
+		}
+		rule[k] = v
+	}
+	_, err = c.UpdatePortForward(ctx, id, rule)
+	return err
+}
+
+// required rejects an empty field, naming what the field wants.
+func required(what string) func(string) error {
+	return func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("required: enter %s", what)
+		}
+		return nil
+	}
+}
+
+// validPortSpec accepts a port, a range like 8000:8010, or empty (which the
+// caller defaults). UniFi rejects anything else, so catch it before the call.
+func validPortSpec(v string) error {
+	if v == "" {
+		return nil
+	}
+	for _, part := range strings.Split(v, ":") {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("not a port or range (e.g. 80 or 8000:8010)")
+		}
+	}
+	return nil
 }
 
 // --- pf get ---
@@ -328,7 +406,8 @@ func completePortForwardIDs(cmd *cobra.Command, args []string, toComplete string
 }
 
 func init() {
-	pfListCmd.Flags().BoolVarP(&pfListFlags.interactive, "interactive", "i", false, "interactive TUI (space toggles enabled)")
+	pfListCmd.Flags().BoolVarP(&pfListFlags.interactive, "interactive", "i", false, "interactive TUI (space toggles enabled, e edits)")
+	pfListCmd.Flags().BoolVarP(&pfListFlags.edit, "edit", "e", false, "interactive TUI opened straight into the edit form")
 
 	addPortForwardFlags(pfAddCmd, &pfAddFlagVals)
 	addPortForwardFlags(pfSetCmd, &pfSetFlagVals)

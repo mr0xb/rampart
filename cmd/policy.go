@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -23,6 +25,7 @@ UniFi Network 9 and later. On older firmware use "rampart fw" instead.`,
 
 var policyListFlags struct {
 	interactive bool
+	edit        bool
 	all         bool
 }
 
@@ -76,9 +79,14 @@ var policyListCmd = &cobra.Command{
 			}
 
 			zoneName := map[string]string{}
+			zoneID := map[string]string{}
+			var zoneNames []string
 			for _, z := range c.ListFirewallZones(ctx) {
 				zoneName[z.ID] = z.Name
+				zoneID[z.Name] = z.ID
+				zoneNames = append(zoneNames, z.Name)
 			}
+			sort.Strings(zoneNames)
 			zone := func(id string) string {
 				if n, ok := zoneName[id]; ok {
 					return n
@@ -103,7 +111,7 @@ var policyListCmd = &cobra.Command{
 			}
 			headers := []string{"ID", "INDEX", "ENABLED", "ACTION", "PROTO", "SRC ZONE", "DST ZONE", "PREDEF", "NAME"}
 
-			if policyListFlags.interactive {
+			if policyListFlags.interactive || policyListFlags.edit {
 				return output.RunInteractiveTable(output.TableOpts{
 					Title:      "rampart · firewall policies (zone-based)",
 					Columns:    headers,
@@ -114,6 +122,14 @@ var policyListCmd = &cobra.Command{
 						ctx, cancel := backgroundCtx()
 						defer cancel()
 						return c.SetFirewallPolicyEnabled(ctx, id, enable)
+					},
+					EditFields:  policyEditFields(zoneNames),
+					StartInEdit: policyListFlags.edit,
+					EditGuard:   policyEditGuard,
+					OnEdit: func(id string, values map[string]string) error {
+						ctx, cancel := backgroundCtx()
+						defer cancel()
+						return updateFirewallPolicyFields(ctx, c, id, values, zoneID)
 					},
 				})
 			}
@@ -126,6 +142,79 @@ var policyListCmd = &cobra.Command{
 			return nil
 		})
 	},
+}
+
+// policyEditFields describes the policy fields editable from the TUI. Column
+// indices refer to the `policy list` table headers. Zone fields are offered
+// only when the controller told us the zone names, since editing a zone means
+// mapping a name back to its id.
+func policyEditFields(zoneNames []string) []output.EditField {
+	fields := []output.EditField{
+		{Label: "name", Key: "name", Column: 8, Kind: output.FieldText,
+			Validate: required("a name")},
+		{Label: "action", Key: "action", Column: 3, Kind: output.FieldChoice,
+			Options: []string{"ALLOW", "BLOCK", "REJECT"}},
+		{Label: "proto", Key: "protocol", Column: 4, Kind: output.FieldText},
+	}
+	if len(zoneNames) > 0 {
+		fields = append(fields,
+			output.EditField{Label: "src zone", Key: "source.zone_id", Column: 5,
+				Kind: output.FieldChoice, Options: zoneNames},
+			output.EditField{Label: "dst zone", Key: "destination.zone_id", Column: 6,
+				Kind: output.FieldChoice, Options: zoneNames},
+		)
+	}
+	return append(fields, output.EditField{
+		Label: "index", Key: "index", Column: 1, Kind: output.FieldText,
+		Validate: validIndex,
+	})
+}
+
+// policyEditGuard blocks editing predefined policies: the controller owns them
+// and rejects most changes.
+func policyEditGuard(row []string) error {
+	if len(row) > 7 && row[7] == "yes" {
+		return fmt.Errorf("policy is predefined")
+	}
+	return nil
+}
+
+// updateFirewallPolicyFields round-trips the policy so fields rampart does not
+// display survive the edit. Zone names are mapped back to ids; a name the
+// controller never reported is left alone rather than guessed at.
+func updateFirewallPolicyFields(ctx context.Context, c *unifi.Client, id string, values map[string]string, zoneID map[string]string) error {
+	policy, err := c.GetFirewallPolicy(ctx, id)
+	if err != nil {
+		return err
+	}
+	for k, v := range values {
+		switch k {
+		case "index":
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("index %q is not a number", v)
+			}
+			policy[k] = n
+		case "source.zone_id", "destination.zone_id":
+			zid, ok := zoneID[v]
+			if !ok {
+				continue // unknown zone name: leave the existing id in place
+			}
+			parent := strings.SplitN(k, ".", 2)[0]
+			nested, ok := policy[parent].(map[string]any)
+			if !ok {
+				nested = map[string]any{}
+			}
+			nested["zone_id"] = zid
+			policy[parent] = nested
+		case "action":
+			policy[k] = strings.ToUpper(v)
+		default:
+			policy[k] = v
+		}
+	}
+	_, err = c.UpdateFirewallPolicy(ctx, id, policy)
+	return err
 }
 
 var policyGetCmd = &cobra.Command{
@@ -265,7 +354,8 @@ func completePolicyIDs(cmd *cobra.Command, args []string, toComplete string) ([]
 }
 
 func init() {
-	policyListCmd.Flags().BoolVarP(&policyListFlags.interactive, "interactive", "i", false, "interactive TUI (space toggles enabled)")
+	policyListCmd.Flags().BoolVarP(&policyListFlags.interactive, "interactive", "i", false, "interactive TUI (space toggles enabled, e edits)")
+	policyListCmd.Flags().BoolVarP(&policyListFlags.edit, "edit", "e", false, "interactive TUI opened straight into the edit form")
 	policyListCmd.Flags().BoolVarP(&policyListFlags.all, "all", "a", false, "include predefined policies")
 	policyAddCmd.Flags().StringVarP(&policyAddFile, "file", "f", "", "JSON file with the policy definition (- for stdin)")
 

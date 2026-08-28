@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -38,6 +39,7 @@ rules may be empty — use "rampart policy" instead.`,
 var fwListFlags struct {
 	ruleset     string
 	interactive bool
+	edit        bool
 }
 
 var fwListCmd = &cobra.Command{
@@ -113,7 +115,7 @@ var fwListCmd = &cobra.Command{
 			}
 			headers := []string{"ID", "INDEX", "RULESET", "ENABLED", "ACTION", "PROTO", "SRC", "SPORT", "DST", "DPORT", "NAME"}
 
-			if fwListFlags.interactive {
+			if fwListFlags.interactive || fwListFlags.edit {
 				return output.RunInteractiveTable(output.TableOpts{
 					Title:      "rampart · firewall rules",
 					Columns:    headers,
@@ -124,6 +126,13 @@ var fwListCmd = &cobra.Command{
 						ctx, cancel := backgroundCtx()
 						defer cancel()
 						return c.SetFirewallRuleEnabled(ctx, id, enable)
+					},
+					EditFields:  fwEditFields(),
+					StartInEdit: fwListFlags.edit,
+					OnEdit: func(id string, values map[string]string) error {
+						ctx, cancel := backgroundCtx()
+						defer cancel()
+						return updateFirewallRuleFields(ctx, c, id, values)
 					},
 				})
 			}
@@ -136,6 +145,64 @@ var fwListCmd = &cobra.Command{
 			return nil
 		})
 	},
+}
+
+// fwEditFields describes the rule fields editable from the TUI. Column indices
+// refer to the `fw list` table headers.
+func fwEditFields() []output.EditField {
+	return []output.EditField{
+		{Label: "name", Key: "name", Column: 10, Kind: output.FieldText,
+			Validate: required("a name")},
+		{Label: "ruleset", Key: "ruleset", Column: 2, Kind: output.FieldChoice, Options: knownRulesets},
+		{Label: "action", Key: "action", Column: 4, Kind: output.FieldChoice,
+			Options: []string{"accept", "drop", "reject"}},
+		// protocol is open-ended (esp, gre, numeric values...), so it stays
+		// free text rather than a choice.
+		{Label: "proto", Key: "protocol", Column: 5, Kind: output.FieldText},
+		{Label: "src", Key: "src_address", Column: 6, Kind: output.FieldText},
+		{Label: "src port", Key: "src_port", Column: 7, Kind: output.FieldText,
+			Validate: validPortSpec},
+		{Label: "dst", Key: "dst_address", Column: 8, Kind: output.FieldText},
+		{Label: "dst port", Key: "dst_port", Column: 9, Kind: output.FieldText,
+			Validate: validPortSpec},
+		{Label: "index", Key: "rule_index", Column: 1, Kind: output.FieldText,
+			Validate: validIndex},
+	}
+}
+
+// updateFirewallRuleFields round-trips the rule so fields rampart does not
+// display survive the edit, then writes back the keys the form supplied.
+func updateFirewallRuleFields(ctx context.Context, c *unifi.Client, id string, values map[string]string) error {
+	rule, err := c.GetFirewallRule(ctx, id)
+	if err != nil {
+		return err
+	}
+	for k, v := range values {
+		switch k {
+		case "rule_index":
+			// rule_index is numeric in the API; a string here is rejected.
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("index %q is not a number", v)
+			}
+			rule[k] = n
+			continue
+		case "action", "protocol":
+			v = strings.ToLower(v)
+		}
+		rule[k] = v
+	}
+	_, err = c.UpdateFirewallRule(ctx, id, rule)
+	return err
+}
+
+// validIndex accepts a non-negative rule/policy ordering index.
+func validIndex(v string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 0 {
+		return fmt.Errorf("not a number")
+	}
+	return nil
 }
 
 // --- fw get ---
@@ -418,7 +485,8 @@ func orDash(s string) string {
 
 func init() {
 	fwListCmd.Flags().StringVar(&fwListFlags.ruleset, "ruleset", "", "filter by ruleset (e.g. WAN_IN)")
-	fwListCmd.Flags().BoolVarP(&fwListFlags.interactive, "interactive", "i", false, "interactive TUI (space toggles enabled)")
+	fwListCmd.Flags().BoolVarP(&fwListFlags.interactive, "interactive", "i", false, "interactive TUI (space toggles enabled, e edits)")
+	fwListCmd.Flags().BoolVarP(&fwListFlags.edit, "edit", "e", false, "interactive TUI opened straight into the edit form")
 	fwListCmd.RegisterFlagCompletionFunc("ruleset", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return knownRulesets, cobra.ShellCompDirectiveNoFileComp
 	})
