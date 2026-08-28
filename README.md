@@ -4,8 +4,6 @@
 
 <h1 align="center">rampart</h1>
 
-<p align="center"><em>A wall around your network.</em></p>
-
 `rampart` is a CLI for managing a **local UniFi gateway or controller**: firewall
 rules, zone-based firewall policies, devices, clients and firewall groups —
 designed to be pleasant interactively *and* trivially parseable from scripts.
