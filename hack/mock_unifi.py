@@ -8,6 +8,10 @@ RULES = {
                "rule_index": 2000, "action": "accept", "enabled": True, "protocol": "tcp",
                "src_address": "10.0.99.0/24", "src_port": "", "dst_address": "", "dst_port": "22",
                "logging": False, "extra_field": "must-survive-roundtrip"},
+    "ccc333": {"_id": "ccc333", "name": "Rule in an unknown ruleset", "ruleset": "CUSTOM_X",
+               "rule_index": 2000, "action": "accept", "enabled": True, "protocol": "tcp",
+               "src_address": "", "src_port": "", "dst_address": "", "dst_port": "8080",
+               "logging": False},
     "bbb222": {"_id": "bbb222", "name": "Block IoT to LAN", "ruleset": "LAN_IN",
                "rule_index": 2001, "action": "drop", "enabled": True, "protocol": "all",
                "src_address": "10.0.30.0/24", "src_port": "", "dst_address": "10.0.10.0/24",
@@ -25,6 +29,9 @@ PORTFWDS = {
 }
 POLICIES = [{"_id": "p1", "name": "Block IoT to Internal", "action": "BLOCK", "enabled": True,
              "index": 10000, "predefined": False, "protocol": "all",
+             "source": {"zone_id": "z-iot"}, "destination": {"zone_id": "z-internal"}},
+            {"_id": "p2", "name": "Predefined default", "action": "ALLOW", "enabled": True,
+             "index": 1, "predefined": True, "protocol": "all",
              "source": {"zone_id": "z-iot"}, "destination": {"zone_id": "z-internal"}}]
 ZONES = [{"_id": "z-iot", "name": "IoT"}, {"_id": "z-internal", "name": "Internal"}]
 NEXT_ID = [1]
